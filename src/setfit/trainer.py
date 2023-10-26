@@ -136,6 +136,9 @@ class SetFitTrainer:
         self.model = model
         self.hp_search_backend = None
         self._freeze = True  # If True, will train the body only; otherwise, train the body and head
+        self.state = {
+            "log_history": [],
+        }
 
     def _validate_column_mapping(self, dataset: "Dataset") -> None:
         """
@@ -278,6 +281,16 @@ class SetFitTrainer:
         else:  # ensure to unfreeze the body
             self.model.unfreeze("body")
 
+    def _log_training_progress(self, training_idx, epoch, steps, current_lr, loss_value):
+        log_entry = {
+            "training_idx": training_idx,
+            "epoch": epoch,
+            "steps": steps,
+            "current_lr": current_lr,
+            "loss_value": loss_value,
+        }
+        self.state["log_history"].append(log_entry)
+
     def train(
         self,
         num_epochs: Optional[int] = None,
@@ -288,6 +301,7 @@ class SetFitTrainer:
         max_length: Optional[int] = None,
         trial: Optional[Union["optuna.Trial", Dict[str, Any]]] = None,
         show_progress_bar: bool = True,
+        log_steps: Optional[int] = 0,
     ) -> None:
         """
         Main training entry point.
@@ -316,6 +330,10 @@ class SetFitTrainer:
             show_progress_bar (`bool`, *optional*, defaults to `True`):
                 Whether to show a bar that indicates training progress.
         """
+
+        def log_training_progress(training_idx, epoch, steps, current_lr, loss_value):
+            self._log_training_progress(training_idx, epoch, steps, current_lr, loss_value)
+
         set_seed(self.seed)  # Seed must be set before instantiating the model when using model_init.
 
         if trial:  # Trial and model initialization
@@ -399,6 +417,8 @@ class SetFitTrainer:
                 warmup_steps=warmup_steps,
                 show_progress_bar=show_progress_bar,
                 use_amp=self.use_amp,
+                log_steps=log_steps,
+                log_callback=self._log_training_progress
             )
 
         if not self.model.has_differentiable_head or not self._freeze:
