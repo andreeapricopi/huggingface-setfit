@@ -2,8 +2,7 @@ import os
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, List, Optional, Tuple, Union
-
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple, Union, Callable
 
 # Google Colab runs on Python 3.7, so we need this to be compatible
 try:
@@ -288,6 +287,7 @@ class SetFitModel(PyTorchModelHubMixin):
         l2_weight: Optional[float] = None,
         max_length: Optional[int] = None,
         show_progress_bar: Optional[bool] = None,
+        log_callback: Optional[Callable[[int, float], None]] = None,
     ) -> None:
         if self.has_differentiable_head:  # train with pyTorch
             device = self.model_body.device
@@ -299,6 +299,7 @@ class SetFitModel(PyTorchModelHubMixin):
             optimizer = self._prepare_optimizer(learning_rate, body_learning_rate, l2_weight)
             scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.5)
             for epoch_idx in trange(num_epochs, desc="Epoch", disable=not show_progress_bar):
+                total_loss_per_epoch = 0.0
                 for batch in dataloader:
                     features, labels = batch
                     optimizer.zero_grad()
@@ -317,7 +318,13 @@ class SetFitModel(PyTorchModelHubMixin):
                     loss.backward()
                     optimizer.step()
 
+                    total_loss_per_epoch += loss.item()
+
                 scheduler.step()
+                if log_callback is not None:
+                    average_loss_per_epoch = total_loss_per_epoch / len(dataloader)
+                    log_callback(epoch_idx, average_loss_per_epoch)
+
         else:  # train with sklearn
             embeddings = self.model_body.encode(x_train, normalize_embeddings=self.normalize_embeddings)
             self.model_head.fit(embeddings, y_train)

@@ -281,12 +281,29 @@ class SetFitTrainer:
         else:  # ensure to unfreeze the body
             self.model.unfreeze("body")
 
-    def _log_training_progress(self, training_idx, epoch, steps, current_lr, loss_value):
+    def _log_sentence_transformer_training_progress(self, training_idx, epoch, steps,
+                                                    current_lr, loss_value) -> None:
         log_entry = {
             "training_idx": training_idx,
             "epoch": epoch,
             "steps": steps,
             "current_lr": current_lr,
+            "loss_value": loss_value,
+        }
+        self.state["log_history"].append(log_entry)
+
+    def _log_classifier_progress(self, epoch: int, loss_value: float) -> None:
+        """
+        Adds the list of training logging information from a classifier to the state's log_history.
+
+        Args:
+            epoch: The current training epoch.
+            loss_value: The training loss for the current epoch.
+
+        Returns: None.
+        """
+        log_entry = {
+            "epoch": epoch,
             "loss_value": loss_value,
         }
         self.state["log_history"].append(log_entry)
@@ -329,6 +346,8 @@ class SetFitTrainer:
                 The trial run or the hyperparameter dictionary for hyperparameter search.
             show_progress_bar (`bool`, *optional*, defaults to `True`):
                 Whether to show a bar that indicates training progress.
+            log_steps (int, *optional*, defaults to 0):
+                Log every `log_steps` steps. Should be greater than 0 for logging to kick in.
         """
         set_seed(self.seed)  # Seed must be set before instantiating the model when using model_init.
 
@@ -414,7 +433,7 @@ class SetFitTrainer:
                 show_progress_bar=show_progress_bar,
                 use_amp=self.use_amp,
                 log_steps=log_steps,
-                log_callback=self._log_training_progress
+                log_callback=self._log_sentence_transformer_training_progress,
             )
 
         if not self.model.has_differentiable_head or not self._freeze:
@@ -429,6 +448,7 @@ class SetFitTrainer:
                 l2_weight=l2_weight,
                 max_length=max_length,
                 show_progress_bar=True,
+                log_callback=self._log_classifier_progress,
             )
 
     def evaluate(self, dataset: Optional[Dataset] = None) -> Dict[str, float]:
