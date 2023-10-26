@@ -330,10 +330,6 @@ class SetFitTrainer:
             show_progress_bar (`bool`, *optional*, defaults to `True`):
                 Whether to show a bar that indicates training progress.
         """
-
-        def log_training_progress(training_idx, epoch, steps, current_lr, loss_value):
-            self._log_training_progress(training_idx, epoch, steps, current_lr, loss_value)
-
         set_seed(self.seed)  # Seed must be set before instantiating the model when using model_init.
 
         if trial:  # Trial and model initialization
