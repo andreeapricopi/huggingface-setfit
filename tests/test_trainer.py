@@ -45,7 +45,7 @@ class SetFitTrainerTest(TestCase):
         metrics = trainer.evaluate()
         self.assertEqual(metrics["accuracy"], 1.0)
 
-    def test_trainer_logging(self):
+    def test_sentence_transformer_trainer_logging(self):
         def get_model():
             model_name = "sentence-transformers/paraphrase-albert-small-v2"
             return SetFitModel.from_pretrained(model_name)
@@ -61,13 +61,46 @@ class SetFitTrainerTest(TestCase):
             eval_dataset=dataset,
             num_iterations=self.num_iterations,
             column_mapping={"text_new": "text", "label_new": "label"},
-            num_epochs=num_epochs
+            num_epochs=num_epochs,
         )
-        trainer.train()
+        trainer.train(log_steps=1)
         log_history = trainer.state["log_history"]
         self.assertIsInstance(log_history, list)
         self.assertEqual(len(log_history), num_epochs)
         self.assertIsInstance(log_history[0], dict)
+        self.assertTrue("epoch" in log_history[0].keys())
+        self.assertTrue("loss_value" in log_history[0].keys())
+
+    def test_classifier_trainer_logging(self):
+        def get_model():
+            model_name = "sentence-transformers/paraphrase-albert-small-v2"
+            return SetFitModel.from_pretrained(model_name,
+                                               use_differentiable_head=True,
+                                               multi_target_strategy="multi-output",
+                                               head_params={"out_features": 3})
+
+        dataset = Dataset.from_dict(
+            {"text_new": ["a", "b", "c"],
+             "label_new": [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+             "extra_column": ["d", "e", "f"]}
+        )
+
+        num_epochs = 3
+        trainer = SetFitTrainer(
+            model_init=get_model,
+            train_dataset=dataset,
+            eval_dataset=dataset,
+            num_iterations=self.num_iterations,
+            column_mapping={"text_new": "text", "label_new": "label"},
+            num_epochs=num_epochs,
+        )
+        trainer.unfreeze(keep_body_frozen=True)
+        trainer.train(log_steps=1)
+        log_history = trainer.state["log_history"]
+        self.assertIsInstance(log_history, list)
+        self.assertEqual(len(log_history), num_epochs)
+        self.assertIsInstance(log_history[0], dict)
+        self.assertTrue("epoch" in log_history[0].keys())
         self.assertTrue("loss_value" in log_history[0].keys())
 
     def test_trainer_works_with_column_mapping(self):
