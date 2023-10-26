@@ -45,6 +45,31 @@ class SetFitTrainerTest(TestCase):
         metrics = trainer.evaluate()
         self.assertEqual(metrics["accuracy"], 1.0)
 
+    def test_trainer_logging(self):
+        def get_model():
+            model_name = "sentence-transformers/paraphrase-albert-small-v2"
+            return SetFitModel.from_pretrained(model_name)
+
+        dataset = Dataset.from_dict(
+            {"text_new": ["a", "b", "c"], "label_new": [0, 1, 2], "extra_column": ["d", "e", "f"]}
+        )
+
+        num_epochs = 3
+        trainer = SetFitTrainer(
+            model_init=get_model,
+            train_dataset=dataset,
+            eval_dataset=dataset,
+            num_iterations=self.num_iterations,
+            column_mapping={"text_new": "text", "label_new": "label"},
+            num_epochs=num_epochs
+        )
+        trainer.train()
+        log_history = trainer.state["log_history"]
+        self.assertIsInstance(log_history, list)
+        self.assertEqual(len(log_history), num_epochs)
+        self.assertIsInstance(log_history[0], dict)
+        self.assertTrue("loss_value" in log_history[0].keys())
+
     def test_trainer_works_with_column_mapping(self):
         dataset = Dataset.from_dict(
             {"text_new": ["a", "b", "c"], "label_new": [0, 1, 2], "extra_column": ["d", "e", "f"]}
