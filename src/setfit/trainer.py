@@ -491,9 +491,18 @@ class SetFitTrainer:
 
         if not self.model.has_differentiable_head or not self._freeze:
             # Train the final classifier
+            def log_training_progress(epoch, loss_value):
+                self._log_training_progress(-1, epoch, -1, -1, loss_value,
+                                            self.classifier_history)
+
+            def log_evaluating_progress(score, epoch):
+                self._log_test_progress(score, epoch, -1, self.classifier_history)
+
             self.model.fit(
-                x_train,
-                y_train,
+                x_train=x_train,
+                y_train=y_train,
+                x_test=x_test,
+                y_test=y_test,
                 num_epochs=num_epochs,
                 batch_size=batch_size,
                 learning_rate=learning_rate,
@@ -501,7 +510,8 @@ class SetFitTrainer:
                 l2_weight=l2_weight,
                 max_length=max_length,
                 show_progress_bar=True,
-                # log_callback=self.log_training_progress, # TODO
+                train_callback=log_training_progress,
+                eval_callback=log_evaluating_progress
             )
 
     def evaluate(self, dataset: Optional[Dataset] = None) -> Dict[str, float]:

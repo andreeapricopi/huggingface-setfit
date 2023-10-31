@@ -20,6 +20,7 @@ from sentence_transformers import InputExample, SentenceTransformer, models
 from sklearn.linear_model import LogisticRegression
 from sklearn.multiclass import OneVsRestClassifier
 from sklearn.multioutput import ClassifierChain, MultiOutputClassifier
+from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss
 from torch.utils.data import DataLoader
 from tqdm.auto import trange
 
@@ -276,10 +277,54 @@ class SetFitModel(PyTorchModelHubMixin):
         # if False, sklearn is assumed to be used instead
         return isinstance(self.model_head, nn.Module)
 
+    def _perform_one_epoch_pass(
+            self,
+            dataloader: DataLoader,
+            epoch_idx: int,
+            device: torch.device,
+            criterion:  BCEWithLogitsLoss | CrossEntropyLoss,
+            optimizer: torch.optim.Optimizer,
+            is_training: bool = False,
+            log_callback: Optional[Callable[[int, float], None]] = None) -> None:
+        cumulative_loss = 0.0
+        for batch in dataloader:
+            features, labels = batch
+            # Clear gradients
+            optimizer.zero_grad()
+
+            # Transfer data to GPU if available
+            features = {k: v.to(device) for k, v in features.items()}
+            labels = labels.to(device)
+
+            # Forward pass
+            outputs = self.model_body(features)
+            if self.normalize_embeddings:
+                outputs = torch.nn.functional.normalize(outputs, p=2, dim=1)
+            outputs = self.model_head(outputs)
+            logits = outputs["logits"]
+
+            # Compute loss
+            loss = criterion(logits, labels)
+            cumulative_loss += loss.item()
+
+            if is_training:
+                # Backpropagation
+                # Compute gradients
+                loss.backward()
+                # Update weights
+                optimizer.step()
+
+        # Log loss
+        if log_callback is not None:
+            average_loss_per_epoch = cumulative_loss / len(dataloader)
+            log_callback(epoch_idx, average_loss_per_epoch)
+
     def fit(
         self,
         x_train: List[str],
         y_train: Union[List[int], List[List[int]]],
+        x_test: List[str],
+        y_test: Union[List[int], List[List[int]]],
         num_epochs: int,
         batch_size: Optional[int] = None,
         learning_rate: Optional[float] = None,
@@ -287,43 +332,41 @@ class SetFitModel(PyTorchModelHubMixin):
         l2_weight: Optional[float] = None,
         max_length: Optional[int] = None,
         show_progress_bar: Optional[bool] = None,
-        log_callback: Optional[Callable[[int, float], None]] = None,
+        train_callback: Optional[Callable[[int, float], None]] = None,
+        eval_callback: Optional[Callable[[int, float], None]] = None,
     ) -> None:
         if self.has_differentiable_head:  # train with pyTorch
             device = self.model_body.device
-            self.model_body.train()
-            self.model_head.train()
 
-            dataloader = self._prepare_dataloader(x_train, y_train, batch_size, max_length)
+            train_dataloader = self._prepare_dataloader(x_train, y_train, batch_size, max_length)
+            test_dataloader = self._prepare_dataloader(x_test, y_test, batch_size, max_length)
             criterion = self.model_head.get_loss_fn()
             optimizer = self._prepare_optimizer(learning_rate, body_learning_rate, l2_weight)
             scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.5)
             for epoch_idx in trange(num_epochs, desc="Epoch", disable=not show_progress_bar):
-                total_loss_per_epoch = 0.0
-                for batch in dataloader:
-                    features, labels = batch
-                    optimizer.zero_grad()
+                self.model_body.train()
+                self.model_head.train()
 
-                    # to model's device
-                    features = {k: v.to(device) for k, v in features.items()}
-                    labels = labels.to(device)
-
-                    outputs = self.model_body(features)
-                    if self.normalize_embeddings:
-                        outputs = torch.nn.functional.normalize(outputs, p=2, dim=1)
-                    outputs = self.model_head(outputs)
-                    logits = outputs["logits"]
-
-                    loss = criterion(logits, labels)
-                    loss.backward()
-                    optimizer.step()
-
-                    total_loss_per_epoch += loss.item()
-
+                self._perform_one_epoch_pass(dataloader=train_dataloader,
+                                             epoch_idx=epoch_idx,
+                                             device=device,
+                                             criterion=criterion,
+                                             optimizer=optimizer,
+                                             is_training=True,
+                                             log_callback=train_callback)
                 scheduler.step()
-                if log_callback is not None:
-                    average_loss_per_epoch = total_loss_per_epoch / len(dataloader)
-                    log_callback(epoch_idx, average_loss_per_epoch)
+
+                # Validation
+                # Set model to evaluation mode
+                self.model_body.eval()
+                self.model_head.eval()
+                self._perform_one_epoch_pass(dataloader=test_dataloader,
+                                             epoch_idx=epoch_idx,
+                                             device=device,
+                                             criterion=criterion,
+                                             optimizer=optimizer,
+                                             is_training=False,
+                                             log_callback=eval_callback)
 
         else:  # train with sklearn
             embeddings = self.model_body.encode(x_train, normalize_embeddings=self.normalize_embeddings)
