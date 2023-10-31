@@ -51,7 +51,7 @@ class SetFitTrainerTest(TestCase):
             return SetFitModel.from_pretrained(model_name)
 
         dataset = Dataset.from_dict(
-            {"text_new": ["a", "b", "c"], "label_new": [0, 1, 2], "extra_column": ["d", "e", "f"]}
+            {"text": ["a", "b", "c"], "label": [0, 1, 2], "extra_column": ["d", "e", "f"]}
         )
 
         num_epochs = 3
@@ -60,16 +60,27 @@ class SetFitTrainerTest(TestCase):
             train_dataset=dataset,
             eval_dataset=dataset,
             num_iterations=self.num_iterations,
-            column_mapping={"text_new": "text", "label_new": "label"},
             num_epochs=num_epochs,
         )
         trainer.train(log_steps=1)
-        log_history = trainer.state["log_history"]
-        self.assertIsInstance(log_history, list)
-        self.assertEqual(len(log_history), num_epochs)
-        self.assertIsInstance(log_history[0], dict)
-        self.assertTrue("epoch" in log_history[0].keys())
-        self.assertTrue("loss_value" in log_history[0].keys())
+        sentence_transformer_log_history = trainer.sentence_transformer_history
+        self.assertIsInstance(sentence_transformer_log_history, dict)
+        self.assertTrue("train" in sentence_transformer_log_history.keys())
+        self.assertTrue("test" in sentence_transformer_log_history.keys())
+        train_history = sentence_transformer_log_history["train"]
+        test_history = sentence_transformer_log_history["test"]
+        self.assertIsInstance(train_history, list)
+        self.assertIsInstance(test_history, list)
+        self.assertEqual(len(train_history), num_epochs)
+        self.assertEqual(len(test_history), num_epochs)
+        self.assertIsInstance(train_history[0], dict)
+        self.assertTrue("epoch" in train_history[0].keys())
+        self.assertTrue("loss_value" in train_history[0].keys())
+        self.assertIsInstance(train_history[0]["loss_value"], float)
+        self.assertIsInstance(test_history[0], dict)
+        self.assertTrue("epoch" in test_history[0].keys())
+        self.assertTrue("loss_value" in test_history[0].keys())
+        self.assertIsInstance(test_history[0]["loss_value"], float)
 
     def test_classifier_trainer_logging(self):
         def get_model():
