@@ -313,14 +313,14 @@ class SetFitTrainer:
 
         model_history["train"].append(log_entry)
 
-    def _log_test_progress(self, score: float, epoch: int, steps: int, model_history: dict) -> None:
+    def _log_test_progress(self, epoch: int, steps: int, score: float, model_history: dict) -> None:
         """
         Adds the current epoch's test logging information to a model's train history.
 
         Args:
-            score: The validation loss value for the current epoch.
             epoch: The current training epoch.
             steps: The step count in the current epoch.
+            score: The validation loss value for the current epoch.
             model_history: The loss history dictionary of update.
 
         Returns: None.
@@ -404,12 +404,13 @@ class SetFitTrainer:
 
         if not self.model.has_differentiable_head or self._freeze:
             # sentence-transformers adaptation
-            def log_training_progress(training_idx, epoch, steps, current_lr, loss_value):
+            def log_training_progress(training_idx: int, epoch: int, steps: int,
+                                      current_lr: float, loss_value: float) -> None:
                 self._log_training_progress(training_idx, epoch, steps, current_lr, loss_value,
                                             self.sentence_transformer_history)
 
-            def log_evaluating_progress(score, epoch, steps):
-                self._log_test_progress(score, epoch, steps, self.sentence_transformer_history)
+            def log_evaluating_progress(score: float, epoch: int, steps: int) -> None:
+                self._log_test_progress(epoch, steps, score, self.sentence_transformer_history)
 
             if self.loss_class in [
                 losses.BatchAllTripletLoss,
@@ -491,12 +492,12 @@ class SetFitTrainer:
 
         if not self.model.has_differentiable_head or not self._freeze:
             # Train the final classifier
-            def log_training_progress(epoch, loss_value):
+            def log_training_progress(epoch: int, loss_value: float) -> None:
                 self._log_training_progress(-1, epoch, -1, -1, loss_value,
                                             self.classifier_history)
 
-            def log_evaluating_progress(score, epoch):
-                self._log_test_progress(score, epoch, -1, self.classifier_history)
+            def log_evaluating_progress(epoch: int, score: float) -> None:
+                self._log_test_progress(epoch, -1, score, self.classifier_history)
 
             self.model.fit(
                 x_train=x_train,
