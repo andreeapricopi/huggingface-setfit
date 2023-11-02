@@ -16,7 +16,7 @@ from . import logging
 from .integrations import default_hp_search_backend, is_optuna_available, run_hp_search_optuna
 from .modeling import SupConLoss, sentence_pairs_generation, sentence_pairs_generation_multilabel
 from .utils import BestRun, default_hp_space_optuna
-
+from custom.validation_loss_evaluator import ValidationLossEvaluator
 
 if TYPE_CHECKING:
     import optuna
@@ -81,25 +81,25 @@ class SetFitTrainer:
     """
 
     def __init__(
-        self,
-        model: Optional["SetFitModel"] = None,
-        train_dataset: Optional["Dataset"] = None,
-        eval_dataset: Optional["Dataset"] = None,
-        model_init: Optional[Callable[[], "SetFitModel"]] = None,
-        metric: Union[str, Callable[["Dataset", "Dataset"], Dict[str, float]]] = "accuracy",
-        metric_kwargs: Optional[Dict[str, Any]] = None,
-        loss_class=losses.CosineSimilarityLoss,
-        num_iterations: int = 20,
-        num_epochs: int = 1,
-        learning_rate: float = 2e-5,
-        batch_size: int = 16,
-        seed: int = 42,
-        column_mapping: Optional[Dict[str, str]] = None,
-        use_amp: bool = False,
-        warmup_proportion: float = 0.1,
-        distance_metric: Callable = BatchHardTripletLossDistanceFunction.cosine_distance,
-        margin: float = 0.25,
-        samples_per_label: int = 2,
+            self,
+            model: Optional["SetFitModel"] = None,
+            train_dataset: Optional["Dataset"] = None,
+            eval_dataset: Optional["Dataset"] = None,
+            model_init: Optional[Callable[[], "SetFitModel"]] = None,
+            metric: Union[str, Callable[["Dataset", "Dataset"], Dict[str, float]]] = "accuracy",
+            metric_kwargs: Optional[Dict[str, Any]] = None,
+            loss_class=losses.CosineSimilarityLoss,
+            num_iterations: int = 20,
+            num_epochs: int = 1,
+            learning_rate: float = 2e-5,
+            batch_size: int = 16,
+            seed: int = 42,
+            column_mapping: Optional[Dict[str, str]] = None,
+            use_amp: bool = False,
+            warmup_proportion: float = 0.1,
+            distance_metric: Callable = BatchHardTripletLossDistanceFunction.cosine_distance,
+            margin: float = 0.25,
+            samples_per_label: int = 2,
     ) -> None:
         if (warmup_proportion < 0.0) or (warmup_proportion > 1.0):
             raise ValueError(
@@ -136,6 +136,16 @@ class SetFitTrainer:
         self.model = model
         self.hp_search_backend = None
         self._freeze = True  # If True, will train the body only; otherwise, train the body and head
+        # Train-Test (or Dev) loss history for the contrastive learning model based on sentence-transformers
+        self.sentence_transformer_history = {
+            "train": [],
+            "test": []
+        }
+        # Train-Test (or Dev) loss history for the classifier head
+        self.classifier_history = {
+            "train": [],
+            "test": []
+        }
 
     def _validate_column_mapping(self, dataset: "Dataset") -> None:
         """
@@ -278,16 +288,61 @@ class SetFitTrainer:
         else:  # ensure to unfreeze the body
             self.model.unfreeze("body")
 
+    def _log_training_progress(self, training_idx: int, epoch: int, steps: int, current_lr: float, loss_value: float,
+                               model_history: dict) -> None:
+        """
+        Adds the current epochs' training logging information to a model's train history.
+
+        Args:
+            training_idx: The loss objective.
+            epoch: The current training epoch.
+            steps: The step count in the current epoch.
+            current_lr: The learning rate for the current step.
+            loss_value: The training loss for the current epoch.
+            model_history: The loss history dictionary of update.
+
+        Returns: None.
+        """
+        log_entry = {
+            "training_idx": training_idx,
+            "epoch": epoch,
+            "steps": steps,
+            "current_lr": current_lr,
+            "loss_value": loss_value,
+        }
+
+        model_history["train"].append(log_entry)
+
+    def _log_test_progress(self, epoch: int, steps: int, score: float, model_history: dict) -> None:
+        """
+        Adds the current epoch's test logging information to a model's train history.
+
+        Args:
+            epoch: The current training epoch.
+            steps: The step count in the current epoch.
+            score: The validation loss value for the current epoch.
+            model_history: The loss history dictionary of update.
+
+        Returns: None.
+        """
+        log_entry = {
+            "epoch": epoch,
+            "loss_value": score,
+        }
+
+        model_history["test"].append(log_entry)
+
     def train(
-        self,
-        num_epochs: Optional[int] = None,
-        batch_size: Optional[int] = None,
-        learning_rate: Optional[float] = None,
-        body_learning_rate: Optional[float] = None,
-        l2_weight: Optional[float] = None,
-        max_length: Optional[int] = None,
-        trial: Optional[Union["optuna.Trial", Dict[str, Any]]] = None,
-        show_progress_bar: bool = True,
+            self,
+            num_epochs: Optional[int] = None,
+            batch_size: Optional[int] = None,
+            learning_rate: Optional[float] = None,
+            body_learning_rate: Optional[float] = None,
+            l2_weight: Optional[float] = None,
+            max_length: Optional[int] = None,
+            trial: Optional[Union["optuna.Trial", Dict[str, Any]]] = None,
+            show_progress_bar: bool = True,
+            log_steps: Optional[int] = 0,
     ) -> None:
         """
         Main training entry point.
@@ -315,6 +370,8 @@ class SetFitTrainer:
                 The trial run or the hyperparameter dictionary for hyperparameter search.
             show_progress_bar (`bool`, *optional*, defaults to `True`):
                 Whether to show a bar that indicates training progress.
+            log_steps (int, *optional*, defaults to 0):
+                Log every `log_steps` steps. Should be greater than 0 for logging to kick in.
         """
         set_seed(self.seed)  # Seed must be set before instantiating the model when using model_init.
 
@@ -326,12 +383,17 @@ class SetFitTrainer:
 
         self._validate_column_mapping(self.train_dataset)
         train_dataset = self.train_dataset
+        eval_dataset = self.eval_dataset
         if self.column_mapping is not None:
             logger.info("Applying column mapping to training dataset")
             train_dataset = self._apply_column_mapping(self.train_dataset, self.column_mapping)
 
         x_train = train_dataset["text"]
         y_train = train_dataset["label"]
+
+        x_test = eval_dataset["text"]
+        y_test = eval_dataset["label"]
+
         if self.loss_class is None:
             logger.warning("No `loss_class` detected! Using `CosineSimilarityLoss` as the default.")
             self.loss_class = losses.CosineSimilarityLoss
@@ -342,6 +404,14 @@ class SetFitTrainer:
 
         if not self.model.has_differentiable_head or self._freeze:
             # sentence-transformers adaptation
+            def log_training_progress(training_idx: int, epoch: int, steps: int,
+                                      current_lr: float, loss_value: float) -> None:
+                self._log_training_progress(training_idx, epoch, steps, current_lr, loss_value,
+                                            self.sentence_transformer_history)
+
+            def log_evaluating_progress(score: float, epoch: int, steps: int) -> None:
+                self._log_test_progress(epoch, steps, score, self.sentence_transformer_history)
+
             if self.loss_class in [
                 losses.BatchAllTripletLoss,
                 losses.BatchHardTripletLoss,
@@ -354,6 +424,10 @@ class SetFitTrainer:
 
                 batch_size = min(batch_size, len(train_data_sampler))
                 train_dataloader = DataLoader(train_data_sampler, batch_size=batch_size, drop_last=True)
+
+                test_examples = [InputExample(texts=[text], label=label) for text, label in zip(x_test, y_test)]
+                test_data_sampler = SentenceLabelDataset(test_examples, samples_per_label=self.samples_per_label)
+                test_dataloader = DataLoader(test_data_sampler, batch_size=batch_size, drop_last=True)
 
                 if self.loss_class is losses.BatchHardSoftMarginTripletLoss:
                     train_loss = self.loss_class(
@@ -370,19 +444,30 @@ class SetFitTrainer:
                     )
             else:
                 train_examples = []
+                test_examples = []
 
                 for _ in trange(self.num_iterations, desc="Generating Training Pairs", disable=not show_progress_bar):
                     if self.model.multi_target_strategy is not None:
                         train_examples = sentence_pairs_generation_multilabel(
                             np.array(x_train), np.array(y_train), train_examples
                         )
+                        test_examples = sentence_pairs_generation_multilabel(
+                            np.array(x_test), np.array(y_test), test_examples
+                        )
                     else:
                         train_examples = sentence_pairs_generation(
                             np.array(x_train), np.array(y_train), train_examples
                         )
+                        test_examples = sentence_pairs_generation(
+                            np.array(x_test), np.array(y_test), test_examples
+                        )
 
                 train_dataloader = DataLoader(train_examples, shuffle=True, batch_size=batch_size)
                 train_loss = self.loss_class(self.model.model_body)
+
+                test_dataloader = DataLoader(test_examples,shuffle=True, batch_size=batch_size)
+
+            evaluator = ValidationLossEvaluator(test_dataloader, train_loss)
 
             total_train_steps = len(train_dataloader) * num_epochs
             logger.info("***** Running training *****")
@@ -399,13 +484,26 @@ class SetFitTrainer:
                 warmup_steps=warmup_steps,
                 show_progress_bar=show_progress_bar,
                 use_amp=self.use_amp,
+                log_steps=log_steps,
+                log_callback=log_training_progress,
+                evaluator=evaluator,
+                callback=log_evaluating_progress,
             )
 
         if not self.model.has_differentiable_head or not self._freeze:
             # Train the final classifier
+            def log_training_progress(epoch: int, loss_value: float) -> None:
+                self._log_training_progress(-1, epoch, -1, -1, loss_value,
+                                            self.classifier_history)
+
+            def log_evaluating_progress(epoch: int, score: float) -> None:
+                self._log_test_progress(epoch, -1, score, self.classifier_history)
+
             self.model.fit(
-                x_train,
-                y_train,
+                x_train=x_train,
+                y_train=y_train,
+                x_test=x_test,
+                y_test=y_test,
                 num_epochs=num_epochs,
                 batch_size=batch_size,
                 learning_rate=learning_rate,
@@ -413,6 +511,8 @@ class SetFitTrainer:
                 l2_weight=l2_weight,
                 max_length=max_length,
                 show_progress_bar=True,
+                train_callback=log_training_progress,
+                eval_callback=log_evaluating_progress
             )
 
     def evaluate(self, dataset: Optional[Dataset] = None) -> Dict[str, float]:
@@ -456,14 +556,14 @@ class SetFitTrainer:
             raise ValueError("metric must be a string or a callable")
 
     def hyperparameter_search(
-        self,
-        hp_space: Optional[Callable[["optuna.Trial"], Dict[str, float]]] = None,
-        compute_objective: Optional[Callable[[Dict[str, float]], float]] = None,
-        n_trials: int = 10,
-        direction: str = "maximize",
-        backend: Optional[Union["str", HPSearchBackend]] = None,
-        hp_name: Optional[Callable[["optuna.Trial"], str]] = None,
-        **kwargs,
+            self,
+            hp_space: Optional[Callable[["optuna.Trial"], Dict[str, float]]] = None,
+            compute_objective: Optional[Callable[[Dict[str, float]], float]] = None,
+            n_trials: int = 10,
+            direction: str = "maximize",
+            backend: Optional[Union["str", HPSearchBackend]] = None,
+            hp_name: Optional[Callable[["optuna.Trial"], str]] = None,
+            **kwargs,
     ) -> BestRun:
         """
         Launch a hyperparameter search using `optuna`. The optimized quantity is determined

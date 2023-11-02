@@ -45,6 +45,65 @@ class SetFitTrainerTest(TestCase):
         metrics = trainer.evaluate()
         self.assertEqual(metrics["accuracy"], 1.0)
 
+    def test_trainer_logging(self, log_history: dict, num_epochs: int, split: str = "train"):
+        self.assertIsInstance(log_history, dict)
+        self.assertTrue(split in log_history.keys())
+        split_log_history = log_history[split]
+        self.assertIsInstance(split_log_history, list)
+        self.assertEqual(len(split_log_history), num_epochs)
+        self.assertIsInstance(split_log_history[0], dict)
+        self.assertTrue("epoch" in split_log_history[0].keys())
+        self.assertTrue("loss_value" in split_log_history[0].keys())
+        self.assertIsInstance(split_log_history[0]["loss_value"], float)
+
+    def test_sentence_transformer_trainer_logging(self):
+        def get_model():
+            model_name = "sentence-transformers/paraphrase-albert-small-v2"
+            return SetFitModel.from_pretrained(model_name)
+
+        dataset = Dataset.from_dict(
+            {"text": ["a", "b", "c"], "label": [0, 1, 2], "extra_column": ["d", "e", "f"]}
+        )
+
+        num_epochs = 3
+        trainer = SetFitTrainer(
+            model_init=get_model,
+            train_dataset=dataset,
+            eval_dataset=dataset,
+            num_iterations=self.num_iterations,
+            num_epochs=num_epochs,
+        )
+        trainer.train(log_steps=1)
+        self.test_trainer_logging(trainer.sentence_transformer_history, num_epochs, "train")
+        self.test_trainer_logging(trainer.sentence_transformer_history, num_epochs, "test")
+
+    def test_classifier_trainer_logging(self):
+        def get_model():
+            model_name = "sentence-transformers/paraphrase-albert-small-v2"
+            return SetFitModel.from_pretrained(model_name,
+                                               use_differentiable_head=True,
+                                               multi_target_strategy="multi-output",
+                                               head_params={"out_features": 3})
+
+        dataset = Dataset.from_dict(
+            {"text": ["a", "b", "c"],
+             "label": [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+             "extra_column": ["d", "e", "f"]}
+        )
+
+        num_epochs = 3
+        trainer = SetFitTrainer(
+            model_init=get_model,
+            train_dataset=dataset,
+            eval_dataset=dataset,
+            num_iterations=self.num_iterations,
+            num_epochs=num_epochs,
+        )
+        trainer.unfreeze(keep_body_frozen=True)
+        trainer.train(log_steps=1)
+        self.test_trainer_logging(trainer.classifier_history, num_epochs, "train")
+        self.test_trainer_logging(trainer.classifier_history, num_epochs, "test")
+
     def test_trainer_works_with_column_mapping(self):
         dataset = Dataset.from_dict(
             {"text_new": ["a", "b", "c"], "label_new": [0, 1, 2], "extra_column": ["d", "e", "f"]}
