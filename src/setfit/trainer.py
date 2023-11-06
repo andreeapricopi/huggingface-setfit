@@ -403,11 +403,22 @@ class SetFitTrainer:
         learning_rate = learning_rate or self.learning_rate
 
         if not self.model.has_differentiable_head or self._freeze:
+            self.train_cumulative_loss = 0.0
+
             # sentence-transformers adaptation
             def log_training_progress(training_idx: int, epoch: int, steps: int,
                                       current_lr: float, loss_value: float) -> None:
-                self._log_training_progress(training_idx, epoch, steps, current_lr, loss_value,
-                                            self.sentence_transformer_history)
+                steps_per_epoch = len(train_dataloader)
+                last_step_in_epoch = steps_per_epoch - 1
+                if steps < last_step_in_epoch:
+                    # The epoch is not over yet, keep cumulating the loss
+                    self.train_cumulative_loss += loss_value
+                else:
+                    # This is the end of the epoch, log the mean loss
+                    loss_value = self.train_cumulative_loss / steps_per_epoch
+                    self._log_training_progress(training_idx, epoch, steps, current_lr, loss_value,
+                                                self.sentence_transformer_history)
+                    self.train_cumulative_loss = 0.0
 
             def log_evaluating_progress(score: float, epoch: int, steps: int) -> None:
                 self._log_test_progress(epoch, steps, score, self.sentence_transformer_history)
@@ -465,7 +476,7 @@ class SetFitTrainer:
                 train_dataloader = DataLoader(train_examples, shuffle=True, batch_size=batch_size)
                 train_loss = self.loss_class(self.model.model_body)
 
-                test_dataloader = DataLoader(test_examples,shuffle=True, batch_size=batch_size)
+                test_dataloader = DataLoader(test_examples, shuffle=True, batch_size=batch_size)
 
             evaluator = ValidationLossEvaluator(test_dataloader, train_loss)
 
