@@ -408,7 +408,6 @@ class SetFitTrainer:
             # sentence-transformers adaptation
             def log_training_progress(training_idx: int, epoch: int, steps: int,
                                       current_lr: float, loss_value: float) -> None:
-                steps_per_epoch = len(train_dataloader)
                 last_step_in_epoch = steps_per_epoch - 1
                 if steps < last_step_in_epoch:
                     # The epoch is not over yet, keep cumulating the loss
@@ -481,6 +480,9 @@ class SetFitTrainer:
             evaluator = ValidationLossEvaluator(test_dataloader, train_loss)
 
             total_train_steps = len(train_dataloader) * num_epochs
+            train_objectives = [(train_dataloader, train_loss)]
+            dataloaders = [dataloader for dataloader, _ in train_objectives]
+            steps_per_epoch = min([len(dataloader) for dataloader in dataloaders])
             logger.info("***** Running training *****")
             logger.info(f"  Num examples = {len(train_examples)}")
             logger.info(f"  Num epochs = {num_epochs}")
@@ -489,7 +491,7 @@ class SetFitTrainer:
 
             warmup_steps = math.ceil(total_train_steps * self.warmup_proportion)
             self.model.model_body.fit(
-                train_objectives=[(train_dataloader, train_loss)],
+                train_objectives=train_objectives,
                 epochs=num_epochs,
                 optimizer_params={"lr": learning_rate},
                 warmup_steps=warmup_steps,
